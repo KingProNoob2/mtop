@@ -1,0 +1,48 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-macos-arm64:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test --locked --target aarch64-apple-darwin
+
+      - name: Build release binary
+        run: cargo build --release --locked --target aarch64-apple-darwin
+
+      - name: Package release artifact
+        run: |
+          mkdir -p dist
+          cp target/aarch64-apple-darwin/release/mtop dist/mtop
+          cp README.md dist/README.md
+          tar -czf dist/mtop-aarch64-apple-darwin.tar.gz -C dist mtop README.md
+          shasum -a 256 dist/mtop-aarch64-apple-darwin.tar.gz > dist/mtop-aarch64-apple-darwin.tar.gz.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mtop-aarch64-apple-darwin
+          path: |
+            dist/mtop
+            dist/mtop-aarch64-apple-darwin.tar.gz
+            dist/mtop-aarch64-apple-darwin.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 30
