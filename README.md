@@ -50,6 +50,5 @@ sudo ./target/release/mtop
 | `↑` / `↓` (`j`/`k`), `PgUp`/`PgDn`, `g`/`G` | Select process |
 | `x` / `Delete` | Terminate selected process (`SIGTERM`, with confirmation) |
 | `p` / `Space` | Pause / Resume |
-| `t` | Cycle color theme (`cyan`, `green`, `amber`, `magenta`) |
 | `+` / `-` | Adjust sampling interval |
 | `q` / `Esc` | Quit |

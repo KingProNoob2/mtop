@@ -386,11 +386,6 @@ fn run_tui(
                         ui.show_settings = true;
                     }
                     KeyCode::Char('p') | KeyCode::Char(' ') => paused = !paused,
-                    KeyCode::Char('t') => {
-                        *theme = theme.next();
-                        cfg.theme = (*theme).into();
-                        save_last_state(cfg, ui, *theme, *interval_ms);
-                    }
                     KeyCode::Char('+') | KeyCode::Char('=') => {
                         *interval_ms = (*interval_ms + 250).min(10_000);
                         cfg.interval_ms = *interval_ms;
