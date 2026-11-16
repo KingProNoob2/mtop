@@ -1,3 +1,4 @@
+mod config;
 mod ioreport;
 mod metrics;
 mod powermetrics;
@@ -8,6 +9,7 @@ mod ui;
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
+use config::{AppConfig, SavedScreen};
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -50,17 +52,17 @@ impl From<ColorArg> for Theme {
     about = "Apple Silicon performance monitor & process explorer for macOS 27+"
 )]
 struct Cli {
-    /// Sampling interval in milliseconds
-    #[arg(short, long, default_value_t = 1000)]
-    interval: u64,
+    /// Sampling interval in milliseconds (overrides saved setting)
+    #[arg(short, long)]
+    interval: Option<u64>,
 
-    /// Color theme
-    #[arg(short, long, value_enum, default_value_t = ColorArg::Cyan)]
-    color: ColorArg,
+    /// Color theme (overrides saved setting)
+    #[arg(short, long, value_enum)]
+    color: Option<ColorArg>,
 
-    /// Initial sort column for process explorer
-    #[arg(short, long, value_enum, default_value_t = SortColumn::Cpu)]
-    sort: SortColumn,
+    /// Initial sort column for process explorer (overrides saved setting)
+    #[arg(short, long, value_enum)]
+    sort: Option<SortColumn>,
 
     /// Show only .app bundle processes initially
     #[arg(long)]
@@ -91,8 +93,10 @@ struct JsonReport<'a> {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let mut interval_ms = cli.interval.max(100);
-    let mut theme: Theme = cli.color.into();
+    let mut cfg = AppConfig::load();
+    let mut interval_ms = cli.interval.unwrap_or(cfg.interval_ms).clamp(100, 10_000);
+    let mut theme: Theme = cli.color.map(Into::into).unwrap_or_else(|| cfg.theme.into());
+    let sort_col = cli.sort.unwrap_or_else(|| cfg.sort_col.into());
 
     let mut collector = MetricsCollector::new(interval_ms, cli.powermetrics)?;
     let mut proc_mon = ProcessMonitor::new();
@@ -104,10 +108,10 @@ fn main() -> Result<()> {
         loop {
             let snap = collector.collect()?;
             let mut procs = proc_mon.sample();
-            if cli.apps {
+            if cli.apps || (cli.sort.is_none() && cfg.apps_only) {
                 procs.retain(|p| p.is_app);
             }
-            sort_processes(&mut procs, cli.sort, cli.sort.default_descending());
+            sort_processes(&mut procs, sort_col, sort_col.default_descending());
             if cli.json {
                 let report = JsonReport {
                     hardware: &snap,
@@ -139,12 +143,19 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut ui_state = UiState {
-        sort_col: cli.sort,
-        sort_desc: cli.sort.default_descending(),
+        view_mode: cfg.initial_view_mode(),
+        sort_col,
+        sort_desc: if let Some(s) = cli.sort {
+            s.default_descending()
+        } else if cfg.remember_last_state {
+            cfg.sort_desc
+        } else {
+            sort_col.default_descending()
+        },
         filter: if cli.apps {
             ProcessFilter::AppsOnly
         } else {
-            ProcessFilter::All
+            cfg.initial_filter()
         },
         ..Default::default()
     };
@@ -155,6 +166,7 @@ fn main() -> Result<()> {
         &mut proc_mon,
         &mut interval_ms,
         &mut theme,
+        &mut cfg,
         &mut ui_state,
     );
 
@@ -203,6 +215,7 @@ fn run_tui(
     proc_mon: &mut ProcessMonitor,
     interval_ms: &mut u64,
     theme: &mut Theme,
+    cfg: &mut AppConfig,
     ui: &mut UiState,
 ) -> Result<()> {
     let mut paused = false;
@@ -236,6 +249,7 @@ fn run_tui(
                 *interval_ms,
                 paused,
                 *theme,
+                cfg,
                 ui,
             );
         })?;
@@ -290,51 +304,121 @@ fn run_tui(
                     continue;
                 }
 
-                let has_procs = ui.view_mode != ui::ViewMode::Hardware;
+                let has_procs = matches!(ui.view_mode, ui::ViewMode::Combined | ui::ViewMode::Processes);
+                let in_settings = ui.view_mode == ui::ViewMode::Settings;
+
                 match key.code {
-                    KeyCode::Char('q') => break,
+                    KeyCode::Char('q') => {
+                        save_last_state(cfg, ui, *theme, *interval_ms);
+                        break;
+                    }
                     KeyCode::Esc => {
                         if has_procs && !ui.search_query.is_empty() {
                             ui.search_query.clear();
                         } else {
+                            save_last_state(cfg, ui, *theme, *interval_ms);
                             break;
                         }
                     }
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
-                    KeyCode::Tab => ui.view_mode = ui.view_mode.next(),
-                    KeyCode::Char('p') | KeyCode::Char(' ') => paused = !paused,
-                    KeyCode::Char('t') => *theme = theme.next(),
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        save_last_state(cfg, ui, *theme, *interval_ms);
+                        break;
+                    }
+                    KeyCode::Tab => {
+                        ui.view_mode = ui.view_mode.next();
+                        save_last_state(cfg, ui, *theme, *interval_ms);
+                    }
+                    KeyCode::Char('p') => paused = !paused,
+                    KeyCode::Char(' ') if !in_settings => paused = !paused,
+                    KeyCode::Char('t') => {
+                        *theme = theme.next();
+                        cfg.theme = (*theme).into();
+                        save_last_state(cfg, ui, *theme, *interval_ms);
+                    }
                     KeyCode::Char('+') | KeyCode::Char('=') => {
                         *interval_ms = (*interval_ms + 250).min(10_000);
+                        cfg.interval_ms = *interval_ms;
+                        save_last_state(cfg, ui, *theme, *interval_ms);
                     }
                     KeyCode::Char('-') => {
                         *interval_ms = interval_ms.saturating_sub(250).max(250);
+                        cfg.interval_ms = *interval_ms;
+                        save_last_state(cfg, ui, *theme, *interval_ms);
                     }
+                    // Settings tab controls
+                    KeyCode::Down | KeyCode::Char('j') if in_settings => {
+                        ui.settings_selected = (ui.settings_selected + 1) % ui::SETTINGS_COUNT;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') if in_settings => {
+                        ui.settings_selected = (ui.settings_selected + ui::SETTINGS_COUNT - 1) % ui::SETTINGS_COUNT;
+                    }
+                    KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Right if in_settings => {
+                        apply_setting_change(ui.settings_selected, true, cfg, ui, theme, interval_ms);
+                    }
+                    KeyCode::Left if in_settings => {
+                        apply_setting_change(ui.settings_selected, false, cfg, ui, theme, interval_ms);
+                    }
+                    KeyCode::Char('R') if in_settings => {
+                        *cfg = AppConfig::default();
+                        *theme = cfg.theme.into();
+                        *interval_ms = cfg.interval_ms;
+                        ui.sort_col = cfg.sort_col.into();
+                        ui.sort_desc = cfg.sort_desc;
+                        ui.filter = cfg.initial_filter();
+                        cfg.save();
+                        ui.status_msg = Some("Settings reset to defaults".to_string());
+                    }
+                    // Process Explorer controls
                     KeyCode::Char('/') if has_procs => {
                         ui.search_mode = true;
                     }
                     KeyCode::Char('f') if has_procs => {
                         ui.filter = ui.filter.next();
                         ui.table_state.select(Some(0));
+                        save_last_state(cfg, ui, *theme, *interval_ms);
                     }
                     KeyCode::Char('r') if has_procs => {
                         ui.sort_desc = !ui.sort_desc;
+                        save_last_state(cfg, ui, *theme, *interval_ms);
                     }
                     KeyCode::Char('s') | KeyCode::Right if has_procs => {
                         ui.sort_col = ui.sort_col.next();
                         ui.sort_desc = ui.sort_col.default_descending();
+                        save_last_state(cfg, ui, *theme, *interval_ms);
                     }
                     KeyCode::Left if has_procs => {
                         ui.sort_col = ui.sort_col.prev();
                         ui.sort_desc = ui.sort_col.default_descending();
+                        save_last_state(cfg, ui, *theme, *interval_ms);
                     }
-                    KeyCode::Char('c') if has_procs => set_sort(ui, SortColumn::Cpu),
-                    KeyCode::Char('m') if has_procs => set_sort(ui, SortColumn::Memory),
-                    KeyCode::Char('n') if has_procs => set_sort(ui, SortColumn::NetDown),
-                    KeyCode::Char('u') if has_procs => set_sort(ui, SortColumn::NetUp),
-                    KeyCode::Char('a') if has_procs => set_sort(ui, SortColumn::App),
-                    KeyCode::Char('d') if has_procs => set_sort(ui, SortColumn::Disk),
-                    KeyCode::Char('i') if has_procs => set_sort(ui, SortColumn::Pid),
+                    KeyCode::Char('c') if has_procs => {
+                        set_sort(ui, SortColumn::Cpu);
+                        save_last_state(cfg, ui, *theme, *interval_ms);
+                    }
+                    KeyCode::Char('m') if has_procs => {
+                        set_sort(ui, SortColumn::Memory);
+                        save_last_state(cfg, ui, *theme, *interval_ms);
+                    }
+                    KeyCode::Char('n') if has_procs => {
+                        set_sort(ui, SortColumn::NetDown);
+                        save_last_state(cfg, ui, *theme, *interval_ms);
+                    }
+                    KeyCode::Char('u') if has_procs => {
+                        set_sort(ui, SortColumn::NetUp);
+                        save_last_state(cfg, ui, *theme, *interval_ms);
+                    }
+                    KeyCode::Char('a') if has_procs => {
+                        set_sort(ui, SortColumn::App);
+                        save_last_state(cfg, ui, *theme, *interval_ms);
+                    }
+                    KeyCode::Char('d') if has_procs => {
+                        set_sort(ui, SortColumn::Disk);
+                        save_last_state(cfg, ui, *theme, *interval_ms);
+                    }
+                    KeyCode::Char('i') if has_procs => {
+                        set_sort(ui, SortColumn::Pid);
+                        save_last_state(cfg, ui, *theme, *interval_ms);
+                    }
                     KeyCode::Down | KeyCode::Char('j') if has_procs => {
                         move_selection(ui, filtered_len, 1);
                     }
@@ -375,6 +459,78 @@ fn run_tui(
     }
 
     Ok(())
+}
+
+fn save_last_state(cfg: &mut AppConfig, ui: &UiState, theme: Theme, interval_ms: u64) {
+    if !cfg.remember_last_state {
+        return;
+    }
+    if let Some(screen) = SavedScreen::from_view_mode(ui.view_mode) {
+        cfg.last_screen = screen;
+    }
+    cfg.theme = theme.into();
+    cfg.interval_ms = interval_ms;
+    cfg.sort_col = ui.sort_col.into();
+    cfg.sort_desc = ui.sort_desc;
+    cfg.apps_only = ui.filter == ProcessFilter::AppsOnly;
+    cfg.save();
+}
+
+fn apply_setting_change(
+    idx: usize,
+    forward: bool,
+    cfg: &mut AppConfig,
+    ui: &mut UiState,
+    theme: &mut Theme,
+    interval_ms: &mut u64,
+) {
+    match idx {
+        0 => {
+            cfg.remember_last_state = !cfg.remember_last_state;
+        }
+        1 => {
+            cfg.default_screen = if forward {
+                cfg.default_screen.next()
+            } else {
+                cfg.default_screen.prev()
+            };
+        }
+        2 => {
+            *theme = if forward {
+                theme.next()
+            } else {
+                theme.next().next().next()
+            };
+            cfg.theme = (*theme).into();
+        }
+        3 => {
+            *interval_ms = if forward {
+                (*interval_ms + 250).min(10_000)
+            } else {
+                interval_ms.saturating_sub(250).max(250)
+            };
+            cfg.interval_ms = *interval_ms;
+        }
+        4 => {
+            let cur: SortColumn = cfg.sort_col.into();
+            let next = if forward { cur.next() } else { cur.prev() };
+            cfg.sort_col = next.into();
+            cfg.sort_desc = next.default_descending();
+            ui.sort_col = next;
+            ui.sort_desc = cfg.sort_desc;
+        }
+        5 => {
+            cfg.sort_desc = !cfg.sort_desc;
+            ui.sort_desc = cfg.sort_desc;
+        }
+        6 => {
+            cfg.apps_only = !cfg.apps_only;
+            ui.filter = cfg.initial_filter();
+            ui.table_state.select(Some(0));
+        }
+        _ => {}
+    }
+    cfg.save();
 }
 
 fn set_sort(ui: &mut UiState, col: SortColumn) {

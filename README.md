@@ -40,7 +40,7 @@ sudo ./target/release/mtop
 
 | Key | Action |
 | --- | --- |
-| `Tab` | Switch view (`Split` → `Processes` → `Hardware`) |
+| `Tab` | Switch view (`Split` → `Processes` → `Hardware` → `Settings`) |
 | `←` / `→` / `s` | Cycle sort column (`PID`, `App`, `CPU%`, `Memory`, `Net ↓/s`, `Net ↑/s`, `Disk/s`, `Thr`) |
 | `c` / `m` / `n` / `u` / `a` / `d` / `i` | Sort by CPU, Memory, Net ↓, Net ↑, App, Disk, or PID |
 | `r` | Reverse sort order |

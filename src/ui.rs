@@ -1,3 +1,4 @@
+use crate::config::AppConfig;
 use crate::metrics::{MetricsCollector, MetricsSnapshot};
 use crate::processes::{ProcessFilter, ProcessInfo, SortColumn};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -59,6 +60,7 @@ pub enum ViewMode {
     Combined,
     Processes,
     Hardware,
+    Settings,
 }
 
 impl ViewMode {
@@ -66,7 +68,8 @@ impl ViewMode {
         match self {
             ViewMode::Combined => ViewMode::Processes,
             ViewMode::Processes => ViewMode::Hardware,
-            ViewMode::Hardware => ViewMode::Combined,
+            ViewMode::Hardware => ViewMode::Settings,
+            ViewMode::Settings => ViewMode::Combined,
         }
     }
 
@@ -75,9 +78,12 @@ impl ViewMode {
             ViewMode::Combined => "Split",
             ViewMode::Processes => "Processes",
             ViewMode::Hardware => "Hardware",
+            ViewMode::Settings => "Settings",
         }
     }
 }
+
+pub const SETTINGS_COUNT: usize = 7;
 
 pub struct UiState {
     pub view_mode: ViewMode,
@@ -89,6 +95,7 @@ pub struct UiState {
     pub table_state: TableState,
     pub confirm_kill: Option<(u32, String)>,
     pub status_msg: Option<String>,
+    pub settings_selected: usize,
 }
 
 impl Default for UiState {
@@ -105,6 +112,7 @@ impl Default for UiState {
             table_state: ts,
             confirm_kill: None,
             status_msg: None,
+            settings_selected: 0,
         }
     }
 }
@@ -119,6 +127,7 @@ pub fn render(
     interval_ms: u64,
     paused: bool,
     theme: Theme,
+    cfg: &AppConfig,
     ui: &mut UiState,
 ) {
     let area = f.area();
@@ -193,6 +202,20 @@ pub fn render(
             render_memory(f, root[3], snap, theme);
             render_footer(f, root[4], theme, ui);
         }
+        ViewMode::Settings => {
+            let root = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(3), // Header
+                    Constraint::Min(10),   // Settings panel
+                    Constraint::Length(1), // Footer
+                ])
+                .split(area);
+
+            render_header(f, root[0], collector, snap, interval_ms, paused, theme, ui.view_mode);
+            render_settings(f, root[1], cfg, theme, ui);
+            render_footer(f, root[2], theme, ui);
+        }
     }
 }
 
@@ -240,14 +263,32 @@ fn render_header(
             Style::default().fg(thermal_color).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!("  {}ms", interval_ms),
+            format!("  {}ms  ", interval_ms),
             Style::default().fg(Color::DarkGray),
         ),
-        Span::styled(
-            format!("  [View: {}]", view_mode.label()),
-            Style::default().fg(theme.accent()),
-        ),
     ];
+
+    for tab in [
+        ViewMode::Combined,
+        ViewMode::Processes,
+        ViewMode::Hardware,
+        ViewMode::Settings,
+    ] {
+        if tab == view_mode {
+            spans.push(Span::styled(
+                format!(" {} ", tab.label()),
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(theme.accent())
+                    .add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            spans.push(Span::styled(
+                format!(" {} ", tab.label()),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+    }
 
     if paused {
         spans.push(Span::styled(
@@ -1116,9 +1157,202 @@ fn render_footer(f: &mut Frame, area: Rect, theme: Theme, ui: &UiState) {
             key("q"),
             Span::raw(":Quit"),
         ],
+        ViewMode::Settings => vec![
+            Span::raw(" "),
+            key("Tab"),
+            Span::raw(":View  "),
+            key("↑↓"),
+            Span::raw(":Select  "),
+            key("Enter/←→"),
+            Span::raw(":Change  "),
+            key("R"),
+            Span::raw(":Reset  "),
+            key("p"),
+            Span::raw(":Pause  "),
+            key("t"),
+            Span::raw(":Theme  "),
+            key("q"),
+            Span::raw(":Quit"),
+        ],
     };
     let footer = Paragraph::new(Line::from(spans)).style(Style::default().fg(Color::Gray));
     f.render_widget(footer, area);
+}
+
+fn render_settings(
+    f: &mut Frame,
+    area: Rect,
+    cfg: &AppConfig,
+    theme: Theme,
+    ui: &UiState,
+) {
+    let outer = Block::default()
+        .title(Span::styled(
+            " Settings ",
+            Style::default()
+                .fg(theme.primary())
+                .add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray));
+    let inner = outer.inner(area);
+    f.render_widget(outer, area);
+
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(9), Constraint::Length(5)])
+        .split(inner);
+
+    let theme_label = match cfg.theme {
+        crate::config::SavedTheme::Cyan => "Cyan",
+        crate::config::SavedTheme::Green => "Green",
+        crate::config::SavedTheme::Amber => "Amber",
+        crate::config::SavedTheme::Magenta => "Magenta",
+    };
+
+    let sort_col: SortColumn = cfg.sort_col.into();
+    let order_label = if cfg.sort_desc {
+        "Descending (▼)"
+    } else {
+        "Ascending (▲)"
+    };
+    let filter_label = if cfg.apps_only { "Apps Only" } else { "All" };
+
+    let items: [(&str, String, &str); SETTINGS_COUNT] = [
+        (
+            "Startup Mode",
+            if cfg.remember_last_state {
+                "[x] Remember last state".to_string()
+            } else {
+                "[ ] Use default screen".to_string()
+            },
+            "Restore last view, sort, filter, theme, and interval on startup",
+        ),
+        (
+            "Default Screen",
+            format!("< {} >", cfg.default_screen.label()),
+            if cfg.remember_last_state {
+                "Screen to open when 'Remember last state' is off (currently overridden by last state)"
+            } else {
+                "Initial screen opened on startup"
+            },
+        ),
+        (
+            "Color Theme",
+            format!("< {} >", theme_label),
+            "Active UI accent palette",
+        ),
+        (
+            "Sampling Interval",
+            format!("< {} ms >", cfg.interval_ms),
+            "Hardware and process polling period (250ms - 10000ms)",
+        ),
+        (
+            "Default Sort Column",
+            format!("< {} >", sort_col.label()),
+            "Process Explorer column sorted on launch",
+        ),
+        (
+            "Default Sort Order",
+            format!("< {} >", order_label),
+            "Sort direction applied on launch",
+        ),
+        (
+            "Default Process Filter",
+            format!("< {} >", filter_label),
+            "Show all processes or .app bundles only on launch",
+        ),
+    ];
+
+    let rows: Vec<Row> = items
+        .iter()
+        .enumerate()
+        .map(|(idx, (name, val, desc))| {
+            let selected = idx == ui.settings_selected;
+            let name_style = if selected {
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            let val_style = if idx == 1 && cfg.remember_last_state {
+                Style::default().fg(Color::DarkGray)
+            } else if selected {
+                Style::default()
+                    .fg(theme.accent())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.primary())
+            };
+
+            let mut row = Row::new([
+                Cell::from(format!("  {}", name)).style(name_style),
+                Cell::from(val.clone()).style(val_style),
+                Cell::from((*desc).to_string()).style(Style::default().fg(Color::DarkGray)),
+            ]);
+            if selected {
+                row = row.style(Style::default().bg(Color::Rgb(42, 52, 68)));
+            }
+            row
+        })
+        .collect();
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(24),
+            Constraint::Length(26),
+            Constraint::Min(20),
+        ],
+    )
+    .header(
+        Row::new([
+            Cell::from("  Option"),
+            Cell::from("Value"),
+            Cell::from("Description"),
+        ])
+        .style(
+            Style::default()
+                .fg(theme.primary())
+                .add_modifier(Modifier::BOLD),
+        ),
+    );
+    f.render_widget(table, sections[0]);
+
+    let summary = if cfg.remember_last_state {
+        format!(
+            "Next launch will restore your last screen ({}) and current preferences.",
+            cfg.last_screen.label()
+        )
+    } else {
+        format!(
+            "Next launch will open on the default screen ({}).",
+            cfg.default_screen.label()
+        )
+    };
+    let path_str = AppConfig::config_path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "(unavailable)".to_string());
+
+    let info_block = Paragraph::new(vec![
+        Line::from(vec![
+            Span::styled(" Startup: ", Style::default().fg(Color::Gray)),
+            Span::styled(summary, Style::default().fg(Color::White)),
+        ]),
+        Line::from(vec![
+            Span::styled(" Config:  ", Style::default().fg(Color::Gray)),
+            Span::styled(path_str, Style::default().fg(theme.accent())),
+            Span::styled("  (saved automatically)", Style::default().fg(Color::DarkGray)),
+        ]),
+    ])
+    .block(
+        Block::default()
+            .title(Span::styled(" Persistence ", Style::default().fg(Color::Yellow)))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
+    f.render_widget(info_block, sections[1]);
 }
 
 pub fn fmt_bytes(bytes: u64) -> String {
