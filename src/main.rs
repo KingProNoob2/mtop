@@ -304,8 +304,62 @@ fn run_tui(
                     continue;
                 }
 
+                if ui.show_settings {
+                    match key.code {
+                        KeyCode::Char('q') => {
+                            save_last_state(cfg, ui, *theme, *interval_ms);
+                            break;
+                        }
+                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            save_last_state(cfg, ui, *theme, *interval_ms);
+                            break;
+                        }
+                        KeyCode::Esc | KeyCode::Char(',') | KeyCode::Char('S') => {
+                            ui.show_settings = false;
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            ui.settings_selected = (ui.settings_selected + 1) % ui::SETTINGS_COUNT;
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            ui.settings_selected =
+                                (ui.settings_selected + ui::SETTINGS_COUNT - 1) % ui::SETTINGS_COUNT;
+                        }
+                        KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Right => {
+                            apply_setting_change(
+                                ui.settings_selected,
+                                true,
+                                cfg,
+                                ui,
+                                theme,
+                                interval_ms,
+                            );
+                        }
+                        KeyCode::Left => {
+                            apply_setting_change(
+                                ui.settings_selected,
+                                false,
+                                cfg,
+                                ui,
+                                theme,
+                                interval_ms,
+                            );
+                        }
+                        KeyCode::Char('R') => {
+                            *cfg = AppConfig::default();
+                            *theme = cfg.theme.into();
+                            *interval_ms = cfg.interval_ms;
+                            ui.sort_col = cfg.sort_col.into();
+                            ui.sort_desc = cfg.sort_desc;
+                            ui.filter = cfg.initial_filter();
+                            cfg.save();
+                            ui.status_msg = Some("Settings reset to defaults".to_string());
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 let has_procs = matches!(ui.view_mode, ui::ViewMode::Combined | ui::ViewMode::Processes);
-                let in_settings = ui.view_mode == ui::ViewMode::Settings;
 
                 match key.code {
                     KeyCode::Char('q') => {
@@ -328,8 +382,10 @@ fn run_tui(
                         ui.view_mode = ui.view_mode.next();
                         save_last_state(cfg, ui, *theme, *interval_ms);
                     }
-                    KeyCode::Char('p') => paused = !paused,
-                    KeyCode::Char(' ') if !in_settings => paused = !paused,
+                    KeyCode::Char(',') | KeyCode::Char('S') => {
+                        ui.show_settings = true;
+                    }
+                    KeyCode::Char('p') | KeyCode::Char(' ') => paused = !paused,
                     KeyCode::Char('t') => {
                         *theme = theme.next();
                         cfg.theme = (*theme).into();
@@ -344,29 +400,6 @@ fn run_tui(
                         *interval_ms = interval_ms.saturating_sub(250).max(250);
                         cfg.interval_ms = *interval_ms;
                         save_last_state(cfg, ui, *theme, *interval_ms);
-                    }
-                    // Settings tab controls
-                    KeyCode::Down | KeyCode::Char('j') if in_settings => {
-                        ui.settings_selected = (ui.settings_selected + 1) % ui::SETTINGS_COUNT;
-                    }
-                    KeyCode::Up | KeyCode::Char('k') if in_settings => {
-                        ui.settings_selected = (ui.settings_selected + ui::SETTINGS_COUNT - 1) % ui::SETTINGS_COUNT;
-                    }
-                    KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Right if in_settings => {
-                        apply_setting_change(ui.settings_selected, true, cfg, ui, theme, interval_ms);
-                    }
-                    KeyCode::Left if in_settings => {
-                        apply_setting_change(ui.settings_selected, false, cfg, ui, theme, interval_ms);
-                    }
-                    KeyCode::Char('R') if in_settings => {
-                        *cfg = AppConfig::default();
-                        *theme = cfg.theme.into();
-                        *interval_ms = cfg.interval_ms;
-                        ui.sort_col = cfg.sort_col.into();
-                        ui.sort_desc = cfg.sort_desc;
-                        ui.filter = cfg.initial_filter();
-                        cfg.save();
-                        ui.status_msg = Some("Settings reset to defaults".to_string());
                     }
                     // Process Explorer controls
                     KeyCode::Char('/') if has_procs => {
@@ -465,9 +498,7 @@ fn save_last_state(cfg: &mut AppConfig, ui: &UiState, theme: Theme, interval_ms:
     if !cfg.remember_last_state {
         return;
     }
-    if let Some(screen) = SavedScreen::from_view_mode(ui.view_mode) {
-        cfg.last_screen = screen;
-    }
+    cfg.last_screen = SavedScreen::from_view_mode(ui.view_mode);
     cfg.theme = theme.into();
     cfg.interval_ms = interval_ms;
     cfg.sort_col = ui.sort_col.into();

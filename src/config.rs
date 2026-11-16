@@ -46,12 +46,11 @@ impl SavedScreen {
         }
     }
 
-    pub fn from_view_mode(v: ViewMode) -> Option<Self> {
+    pub fn from_view_mode(v: ViewMode) -> Self {
         match v {
-            ViewMode::Combined => Some(SavedScreen::Split),
-            ViewMode::Processes => Some(SavedScreen::Processes),
-            ViewMode::Hardware => Some(SavedScreen::Hardware),
-            ViewMode::Settings => None,
+            ViewMode::Combined => SavedScreen::Split,
+            ViewMode::Processes => SavedScreen::Processes,
+            ViewMode::Hardware => SavedScreen::Hardware,
         }
     }
 }

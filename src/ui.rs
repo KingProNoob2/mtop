@@ -5,7 +5,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, Cell, Gauge, Paragraph, Row, Sparkline, Table, TableState,
+    Block, Borders, Cell, Clear, Gauge, Paragraph, Row, Sparkline, Table, TableState,
 };
 use ratatui::Frame;
 
@@ -60,7 +60,6 @@ pub enum ViewMode {
     Combined,
     Processes,
     Hardware,
-    Settings,
 }
 
 impl ViewMode {
@@ -68,8 +67,7 @@ impl ViewMode {
         match self {
             ViewMode::Combined => ViewMode::Processes,
             ViewMode::Processes => ViewMode::Hardware,
-            ViewMode::Hardware => ViewMode::Settings,
-            ViewMode::Settings => ViewMode::Combined,
+            ViewMode::Hardware => ViewMode::Combined,
         }
     }
 
@@ -78,7 +76,6 @@ impl ViewMode {
             ViewMode::Combined => "Split",
             ViewMode::Processes => "Processes",
             ViewMode::Hardware => "Hardware",
-            ViewMode::Settings => "Settings",
         }
     }
 }
@@ -95,6 +92,7 @@ pub struct UiState {
     pub table_state: TableState,
     pub confirm_kill: Option<(u32, String)>,
     pub status_msg: Option<String>,
+    pub show_settings: bool,
     pub settings_selected: usize,
 }
 
@@ -112,6 +110,7 @@ impl Default for UiState {
             table_state: ts,
             confirm_kill: None,
             status_msg: None,
+            show_settings: false,
             settings_selected: 0,
         }
     }
@@ -202,21 +201,21 @@ pub fn render(
             render_memory(f, root[3], snap, theme);
             render_footer(f, root[4], theme, ui);
         }
-        ViewMode::Settings => {
-            let root = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(3), // Header
-                    Constraint::Min(10),   // Settings panel
-                    Constraint::Length(1), // Footer
-                ])
-                .split(area);
-
-            render_header(f, root[0], collector, snap, interval_ms, paused, theme, ui.view_mode);
-            render_settings(f, root[1], cfg, theme, ui);
-            render_footer(f, root[2], theme, ui);
-        }
     }
+
+    if ui.show_settings {
+        let popup = centered_rect(area, 92, 18);
+        f.render_widget(Clear, popup);
+        render_settings(f, popup, cfg, theme, ui);
+    }
+}
+
+fn centered_rect(area: Rect, max_w: u16, max_h: u16) -> Rect {
+    let w = area.width.saturating_sub(4).min(max_w).max(area.width.min(40));
+    let h = area.height.saturating_sub(2).min(max_h).max(area.height.min(12));
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    Rect::new(x, y, w, h)
 }
 
 fn render_header(
@@ -268,12 +267,7 @@ fn render_header(
         ),
     ];
 
-    for tab in [
-        ViewMode::Combined,
-        ViewMode::Processes,
-        ViewMode::Hardware,
-        ViewMode::Settings,
-    ] {
+    for tab in [ViewMode::Combined, ViewMode::Processes, ViewMode::Hardware] {
         if tab == view_mode {
             spans.push(Span::styled(
                 format!(" {} ", tab.label()),
@@ -1118,62 +1112,65 @@ fn render_footer(f: &mut Frame, area: Rect, theme: Theme, ui: &UiState) {
                 .add_modifier(Modifier::BOLD),
         )
     };
-    let spans = match ui.view_mode {
-        ViewMode::Combined | ViewMode::Processes => vec![
+    let spans = if ui.show_settings {
+        vec![
             Span::raw(" "),
-            key("Tab"),
-            Span::raw(":View  "),
-            key("←→/c/m/n/u/a/d"),
-            Span::raw(":Sort  "),
-            key("r"),
-            Span::raw(":Rev  "),
-            key("f"),
-            Span::raw(":Filter  "),
-            key("/"),
-            Span::raw(":Search  "),
-            key("↑↓"),
-            Span::raw(":Sel  "),
-            key("x"),
-            Span::raw(":Kill  "),
-            key("p"),
-            Span::raw(":Pause  "),
-            key("t"),
-            Span::raw(":Theme  "),
-            key("+/-"),
-            Span::raw(":Rate  "),
-            key("q"),
-            Span::raw(":Quit"),
-        ],
-        ViewMode::Hardware => vec![
-            Span::raw(" "),
-            key("Tab"),
-            Span::raw(":View  "),
-            key("p"),
-            Span::raw(":Pause  "),
-            key("t"),
-            Span::raw(":Theme  "),
-            key("+/-"),
-            Span::raw(":Rate  "),
-            key("q"),
-            Span::raw(":Quit"),
-        ],
-        ViewMode::Settings => vec![
-            Span::raw(" "),
-            key("Tab"),
-            Span::raw(":View  "),
             key("↑↓"),
             Span::raw(":Select  "),
             key("Enter/←→"),
             Span::raw(":Change  "),
             key("R"),
             Span::raw(":Reset  "),
-            key("p"),
-            Span::raw(":Pause  "),
-            key("t"),
-            Span::raw(":Theme  "),
+            key(",/Esc"),
+            Span::raw(":Close  "),
             key("q"),
             Span::raw(":Quit"),
-        ],
+        ]
+    } else {
+        match ui.view_mode {
+            ViewMode::Combined | ViewMode::Processes => vec![
+                Span::raw(" "),
+                key("Tab"),
+                Span::raw(":View  "),
+                key("←→/c/m/n/u/a/d"),
+                Span::raw(":Sort  "),
+                key("r"),
+                Span::raw(":Rev  "),
+                key("f"),
+                Span::raw(":Filter  "),
+                key("/"),
+                Span::raw(":Search  "),
+                key("↑↓"),
+                Span::raw(":Sel  "),
+                key("x"),
+                Span::raw(":Kill  "),
+                key("p"),
+                Span::raw(":Pause  "),
+                key("t"),
+                Span::raw(":Theme  "),
+                key("+/-"),
+                Span::raw(":Rate  "),
+                key(","),
+                Span::raw(":Settings  "),
+                key("q"),
+                Span::raw(":Quit"),
+            ],
+            ViewMode::Hardware => vec![
+                Span::raw(" "),
+                key("Tab"),
+                Span::raw(":View  "),
+                key("p"),
+                Span::raw(":Pause  "),
+                key("t"),
+                Span::raw(":Theme  "),
+                key("+/-"),
+                Span::raw(":Rate  "),
+                key(","),
+                Span::raw(":Settings  "),
+                key("q"),
+                Span::raw(":Quit"),
+            ],
+        }
     };
     let footer = Paragraph::new(Line::from(spans)).style(Style::default().fg(Color::Gray));
     f.render_widget(footer, area);
@@ -1194,7 +1191,7 @@ fn render_settings(
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(theme.primary()));
     let inner = outer.inner(area);
     f.render_widget(outer, area);
 
