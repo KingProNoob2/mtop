@@ -1,10 +1,11 @@
 use crate::ioreport::{CoreStat, IOReportMonitor};
 use crate::powermetrics::PowermetricsRunner;
 use crate::smc::SmcReader;
-use crate::sysinfo::{get_thermal_pressure, read_memory_stats, ChipInfo};
+use crate::sysinfo::{get_thermal_pressure, read_memory_stats, read_network_bytes, ChipInfo};
 use anyhow::Result;
 use serde::Serialize;
 use std::collections::VecDeque;
+use std::time::Instant;
 
 const HISTORY_LEN: usize = 60;
 
@@ -57,6 +58,11 @@ pub struct MetricsSnapshot {
     pub mem_compressed_bytes: u64,
     pub swap_total_bytes: u64,
     pub swap_used_bytes: u64,
+
+    pub net_rx_bps: f64,
+    pub net_tx_bps: f64,
+    pub net_rx_total_bytes: u64,
+    pub net_tx_total_bytes: u64,
 }
 
 pub struct MetricsCollector {
@@ -70,11 +76,18 @@ pub struct MetricsCollector {
     pub gpu_hist: VecDeque<u64>,
     pub power_hist: VecDeque<u64>,
     pub mem_hist: VecDeque<u64>,
+    pub net_hist: VecDeque<u64>,
 
     pub peak_system_power_w: f64,
     pub avg_system_power_w: f64,
     power_samples: u64,
     power_sum_w: f64,
+
+    prev_net_rx: u64,
+    prev_net_tx: u64,
+    prev_net_at: Instant,
+    pub peak_net_rx_bps: f64,
+    pub peak_net_tx_bps: f64,
 }
 
 impl MetricsCollector {
@@ -93,6 +106,8 @@ impl MetricsCollector {
             None
         };
 
+        let (init_rx, init_tx) = read_network_bytes();
+
         Ok(Self {
             chip,
             ioreport,
@@ -103,10 +118,16 @@ impl MetricsCollector {
             gpu_hist: VecDeque::from(vec![0; HISTORY_LEN]),
             power_hist: VecDeque::from(vec![0; HISTORY_LEN]),
             mem_hist: VecDeque::from(vec![0; HISTORY_LEN]),
+            net_hist: VecDeque::from(vec![0; HISTORY_LEN]),
             peak_system_power_w: 0.0,
             avg_system_power_w: 0.0,
             power_samples: 0,
             power_sum_w: 0.0,
+            prev_net_rx: init_rx,
+            prev_net_tx: init_tx,
+            prev_net_at: Instant::now(),
+            peak_net_rx_bps: 0.0,
+            peak_net_tx_bps: 0.0,
         })
     }
 
@@ -166,6 +187,26 @@ impl MetricsCollector {
         };
         push_hist(&mut self.mem_hist, mem_pct);
 
+        let (net_rx_total_bytes, net_tx_total_bytes) = read_network_bytes();
+        let net_now = Instant::now();
+        let net_dt = net_now
+            .duration_since(self.prev_net_at)
+            .as_secs_f64()
+            .max(0.001);
+        let net_rx_bps = net_rx_total_bytes.saturating_sub(self.prev_net_rx) as f64 / net_dt;
+        let net_tx_bps = net_tx_total_bytes.saturating_sub(self.prev_net_tx) as f64 / net_dt;
+        self.prev_net_rx = net_rx_total_bytes;
+        self.prev_net_tx = net_tx_total_bytes;
+        self.prev_net_at = net_now;
+        if net_rx_bps > self.peak_net_rx_bps {
+            self.peak_net_rx_bps = net_rx_bps;
+        }
+        if net_tx_bps > self.peak_net_tx_bps {
+            self.peak_net_tx_bps = net_tx_bps;
+        }
+        let net_kbs = ((net_rx_bps + net_tx_bps) / 1024.0).round() as u64;
+        push_hist(&mut self.net_hist, net_kbs);
+
         Ok(MetricsSnapshot {
             ecpu_util_pct: ir.ecpu_util_pct,
             ecpu_freq_mhz: ir.ecpu_freq_mhz,
@@ -193,6 +234,10 @@ impl MetricsCollector {
             mem_compressed_bytes: mem.compressed_bytes,
             swap_total_bytes: mem.swap_total_bytes,
             swap_used_bytes: mem.swap_used_bytes,
+            net_rx_bps,
+            net_tx_bps,
+            net_rx_total_bytes,
+            net_tx_total_bytes,
         })
     }
 }

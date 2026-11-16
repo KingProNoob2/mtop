@@ -634,6 +634,13 @@ fn print_text_summary(
         snap.swap_total_bytes as f64 / gb
     );
     println!(
+        "Net:   ↓ {} (total {}) | ↑ {} (total {})",
+        fmt_rate(snap.net_rx_bps),
+        fmt_bytes(snap.net_rx_total_bytes),
+        fmt_rate(snap.net_tx_bps),
+        fmt_bytes(snap.net_tx_total_bytes),
+    );
+    println!(
         "\n{:<7} {:<30} {:>7} {:>10} {:>11} {:>11} {:>11} {:>4}",
         "PID", "APP / PROCESS", "CPU%", "MEMORY", "NET DOWN", "NET UP", "DISK/S", "THR"
     );

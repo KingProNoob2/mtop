@@ -355,3 +355,37 @@ pub fn read_memory_stats(total_bytes: u64) -> MemoryStats {
 
     stats
 }
+
+pub fn read_network_bytes() -> (u64, u64) {
+    let mut ifap: *mut libc::ifaddrs = ptr::null_mut();
+    if unsafe { libc::getifaddrs(&mut ifap) } != 0 || ifap.is_null() {
+        return (0, 0);
+    }
+
+    let mut total_rx: u64 = 0;
+    let mut total_tx: u64 = 0;
+    let mut cur = ifap;
+
+    unsafe {
+        while !cur.is_null() {
+            let ifa = &*cur;
+            if !ifa.ifa_addr.is_null()
+                && !ifa.ifa_data.is_null()
+                && !ifa.ifa_name.is_null()
+                && (*ifa.ifa_addr).sa_family as i32 == libc::AF_LINK
+                && (ifa.ifa_flags as i32 & libc::IFF_LOOPBACK) == 0
+            {
+                let name = CStr::from_ptr(ifa.ifa_name).to_string_lossy();
+                if name.starts_with("en") || name.starts_with("pdp_ip") {
+                    let data = &*(ifa.ifa_data as *const libc::if_data);
+                    total_rx = total_rx.saturating_add(data.ifi_ibytes as u64);
+                    total_tx = total_tx.saturating_add(data.ifi_obytes as u64);
+                }
+            }
+            cur = ifa.ifa_next;
+        }
+        libc::freeifaddrs(ifap);
+    }
+
+    (total_rx, total_tx)
+}

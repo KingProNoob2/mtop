@@ -190,7 +190,7 @@ pub fn render(
                     Constraint::Length(3), // Header
                     Constraint::Length(9), // CPU & GPU/ANE
                     Constraint::Min(10),   // Per-core & Power/Thermals
-                    Constraint::Length(5), // Memory & Swap
+                    Constraint::Length(6), // Memory & Network
                     Constraint::Length(1), // Footer
                 ])
                 .split(area);
@@ -198,7 +198,12 @@ pub fn render(
             render_header(f, root[0], collector, snap, interval_ms, paused, theme, ui.view_mode);
             render_top_row(f, root[1], collector, snap, theme);
             render_mid_row(f, root[2], collector, snap, theme);
-            render_memory(f, root[3], snap, theme);
+            let bottom_cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(root[3]);
+            render_memory(f, bottom_cols[0], snap, theme);
+            render_network(f, bottom_cols[1], collector, snap, theme);
             render_footer(f, root[4], theme, ui);
         }
     }
@@ -336,6 +341,12 @@ fn render_mini_summary(f: &mut Frame, area: Rect, snap: &MetricsSnapshot, theme:
             "{:.1}/{:.0}GB",
             snap.mem_used_bytes as f64 / gb,
             snap.mem_total_bytes as f64 / gb
+        )),
+        Span::styled("   Net: ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        Span::raw(format!(
+            "↓{} ↑{}",
+            fmt_rate(snap.net_rx_bps),
+            fmt_rate(snap.net_tx_bps)
         )),
     ]);
 
@@ -861,6 +872,75 @@ fn render_memory(f: &mut Frame, area: Rect, snap: &MetricsSnapshot, theme: Theme
         ),
     ]);
     f.render_widget(Paragraph::new(detail), rows[1]);
+}
+
+fn render_network(
+    f: &mut Frame,
+    area: Rect,
+    collector: &MetricsCollector,
+    snap: &MetricsSnapshot,
+    theme: Theme,
+) {
+    let block = Block::default()
+        .title(Span::styled(
+            " Network ",
+            Style::default().fg(theme.primary()).add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
+        .split(inner);
+
+    let rx_line = Line::from(vec![
+        Span::styled("Down: ", Style::default().fg(Color::Gray)),
+        Span::styled(
+            format!("{:<10}", fmt_rate(snap.net_rx_bps)),
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(
+                "  Peak: {:<10} Total: {}",
+                fmt_rate(collector.peak_net_rx_bps),
+                fmt_bytes(snap.net_rx_total_bytes)
+            ),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]);
+    f.render_widget(Paragraph::new(rx_line), rows[0]);
+
+    let tx_line = Line::from(vec![
+        Span::styled("Up:   ", Style::default().fg(Color::Gray)),
+        Span::styled(
+            format!("{:<10}", fmt_rate(snap.net_tx_bps)),
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(
+                "  Peak: {:<10} Total: {}",
+                fmt_rate(collector.peak_net_tx_bps),
+                fmt_bytes(snap.net_tx_total_bytes)
+            ),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]);
+    f.render_widget(Paragraph::new(tx_line), rows[1]);
+
+    let hist: Vec<u64> = collector.net_hist.iter().copied().collect();
+    let max_net = hist.iter().copied().max().unwrap_or(0).max(100);
+    let spark = Sparkline::default()
+        .data(&hist)
+        .max(max_net)
+        .style(Style::default().fg(Color::Green));
+    f.render_widget(spark, rows[2]);
 }
 
 fn render_process_table(
